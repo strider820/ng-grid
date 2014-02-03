@@ -1,10 +1,11 @@
 /**
  *
  * @param opts
- * required options:
+ * options:
  *    expandable_columns: an array of fields that should be expandable
  *    fetchChildren: a function that returns a promise where the result of
  *                   that promise is an array of child grid data
+ *    enableCache: (optional) boolean to control whether to store requested children in a hash on each row
  */
 ngGridDrillInPlugin = function (opts) {
     var self = this;
@@ -28,27 +29,34 @@ ngGridDrillInPlugin = function (opts) {
         });
 
         /**
-         *
+         * Whenever sortInfo changes, update each group's sorting
          */
         self.scope.$watch(function(){return self.grid.config.sortInfo;},function() {
             if (self.scope[self.grid.config.data] && self.grid.config.sortInfo.fields) {
-                // get rid of everything that's not a parent so we can sort the parent rows first
-                self.scope.$parent.$parent[self.grid.config.data] = self.scope[self.grid.config.data].filter(function(rowEntity) {
-                    return typeof rowEntity.parent_row == "undefined";
-                });
-
-                // sort all parent rows
-                self.sortService.Sort(self.grid.config.sortInfo,self.scope[self.grid.config.data]);
-
-                // sort each row's children
-                angular.forEach(self.scope[self.grid.config.data],function(childEntity) {
-                    self.scope.sortChildren(childEntity);
-                });
+                self.scope.redrawGrid();
             }
         },true);
 
         /**
-         *
+         * Give the grid a new array, and re-expand all the currently expanded columns
+         */
+        self.scope.redrawGrid = function() {
+            // get rid of everything that's not a parent so we can sort the parent rows first
+            self.scope.$parent.$parent[self.grid.config.data] = self.scope[self.grid.config.data].filter(function(rowEntity) {
+                return typeof rowEntity.parent_row == "undefined";
+            });
+
+            // sort all parent rows
+            self.sortService.Sort(self.grid.config.sortInfo,self.scope[self.grid.config.data]);
+
+            // sort each row's children
+            angular.forEach(self.scope[self.grid.config.data],function(childEntity) {
+                self.scope.sortChildren(childEntity);
+            });
+        };
+
+        /**
+         * Recursive function to sort each group of child nodes
          * @param rowEntity
          */
         self.scope.sortChildren = function(rowEntity) {
@@ -119,19 +127,44 @@ ngGridDrillInPlugin = function (opts) {
             // add column to expanded columns list
             row.entity.expanded_columns.push(col.field);
 
-            // run the fetch
-            opts.fetchChildren(row,row.entity.expanded_columns).then(function(data)
+            // use cached data if we have it
+            if (row.entity.pastChildren && row.entity.pastChildren[col.field])
             {
-                // save the children, and sort them in case we already have sorting happening
-                row.entity.children = data;
+                row.entity.children = row.entity.pastChildren[col.field];
                 self.scope.sortChildren(row.entity);
 
-                // loop over the children, and assign the parent row and expanded columns variables
+                // loop over the children, and re-assign the expanded columns variable as they may have changed
                 angular.forEach(row.entity.children, function(childEntity) {
-                    childEntity.parent_row = row.entity;
                     childEntity.expanded_columns = angular.copy(row.entity.expanded_columns);
                 });
-            });
+
+                // need to redraw the grid for the data watcher to hit
+                self.scope.redrawGrid();
+            }
+            else
+            {
+                // run the fetch
+                opts.fetchChildren(row,row.entity.expanded_columns).then(function(data)
+                {
+                    if (opts.enableCache)
+                    {
+                        if (typeof row.entity.pastChildren == "undefined")
+                        {
+                            row.entity.pastChildren = {};
+                        }
+                        row.entity.pastChildren[col.field] = data;
+                    }
+                    // save the children, and sort them in case we already have sorting happening
+                    row.entity.children = data;
+                    self.scope.sortChildren(row.entity);
+
+                    // loop over the children, and assign the parent row and expanded columns variables
+                    angular.forEach(row.entity.children, function(childEntity) {
+                        childEntity.parent_row = row.entity;
+                        childEntity.expanded_columns = angular.copy(row.entity.expanded_columns);
+                    });
+                });
+            }
         };
     };
 };
